@@ -46,6 +46,7 @@ public class App {
         //create terminal
         SingleCDockable terminal = Terminal.getComponent();
         Terminal.setAsOutputStream();
+//        Terminal.setAsErrorStream();
 
 
         //create CWorkingArea
@@ -57,7 +58,7 @@ public class App {
 
 
         grid.add(0, 0, 1, 1, workingArea);
-        grid.add(0, 1, 1, 0.25, terminal);
+        grid.add(0, 1, 1, 1, terminal);
 
         //set components visible
         terminal.setVisible(true);
@@ -73,6 +74,9 @@ public class App {
 
         frame.setBounds(20, 20, 400, 400);
         frame.setVisible(true);
+
+//        System.out.println("test 1");
+//        System.out.println("test 2");
     }
 
 }

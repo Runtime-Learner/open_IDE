@@ -3,9 +3,9 @@ package General_Purpose_IDE.GUI;
 import General_Purpose_IDE.app.Scheduler;
 import bibliothek.gui.dock.common.DefaultSingleCDockable;
 import General_Purpose_IDE.app.Interpreter;
-import org.apache.commons.lang3.StringUtils;
 
 import javax.swing.*;
+import javax.swing.text.BadLocationException;
 import java.awt.*;
 import java.awt.event.KeyEvent;
 import java.awt.event.KeyListener;
@@ -19,8 +19,9 @@ public class Terminal extends OutputStream {
     public static DefaultSingleCDockable terminal;
     private static String currentDirectory = "";
     private static String shellPrompt = "$ ";
-    private static volatile JTextArea textArea;
-    private static Terminal terminalInstance = null;
+    private static volatile JTextPane textArea;
+    private static Terminal terminalOut = null;
+    private static Terminal terminalErr = null;
 
     /** used to ensure user is always where we want them to be */
     private static int oldCaretPosition;
@@ -30,19 +31,21 @@ public class Terminal extends OutputStream {
 
     /** Fair lock for concurrent writing. */
     private static final Semaphore lock = new Semaphore(1);
+    private static volatile int runningInstructions = 0;
+    private static volatile String savedUserCommand = "";
 
 
 
 
     private Terminal() {
-        terminalInstance = this;
     }
 
     private static void create() {
-        if (terminalInstance != null) {
+        if (terminalOut != null) {
             return;
         }
-        terminalInstance = new Terminal();
+        terminalOut = new Terminal();
+        terminalErr = new Terminal();
 
         String id = "Terminal";
         String title = "Terminal";
@@ -52,8 +55,9 @@ public class Terminal extends OutputStream {
         dockable.setCloseable( false );
 
         //initialize textArea
-        textArea = new JTextArea();
-        textArea.setLineWrap(true);
+        textArea = new JTextPane();
+        //TODO: fix linewrap
+//        textArea.setLineWrap(true);
         textArea.setEditable(true);
         textArea.setFont(new Font(null, 0, 20));
         textArea.addCaretListener(e -> caretMovedEvent());
@@ -74,7 +78,6 @@ public class Terminal extends OutputStream {
             }
         });
         //initialize the command prompt text
-        textArea.append(currentDirectory + shellPrompt);
         textArea.setCaretPosition(0);
         oldCaretPosition = 0;
 
@@ -99,99 +102,175 @@ public class Terminal extends OutputStream {
 
     public static void setAsOutputStream() {
         create();
-        System.setOut(new PrintStream(terminalInstance));
+        System.setOut(new PrintStream(terminalOut));
     }
 
     public static void setAsErrorStream() {
         create();
-        System.setErr(new PrintStream(terminalInstance));
+        System.setErr(new PrintStream(terminalErr));
     }
 
     /* This method creates a new Dockable with title "Terminal" and a single JPanel with
      * its background color set to "color". */
     public static DefaultSingleCDockable getComponent() {
         create();
+        showUserPrompt();
         return terminal;
     }
 
-    public static Object runCommand(String instruction) {
+    public static synchronized Object runCommand(String instruction) {
         //TODO: need to check to see if an instruction is currently running (maybe have a running stack)
-
-        textArea.setEditable(false);
-        Object returnValue = Scheduler.runCommand(instruction);
-        if (textArea.getDocument().getLength() > getLineStart(textArea.getText())) {
-            if (!textArea.getText().substring(getLineStart(textArea.getText())).contains("\n")) {
-                textArea.append("\n");
-            }
-            textArea.append(currentDirectory + shellPrompt);
+        if (userPromptIsVisible()) {
+            hideUserPrompt(true);
+//            textArea.setText(textArea.getText().substring(0, getLineStart(textArea.getText())));
         }
+        runningInstructions++;
+//        System.err.println("running instruction " + instruction);
+        Object returnValue = Scheduler.runCommand(instruction);
 
-        textArea.setEditable(true);
+        runningInstructions--;
+        if (runningInstructions == 0) {
+            showUserPrompt();
+        }
         return returnValue;
+    }
+
+    private static void hideUserPrompt(boolean saveUserInput) {
+        if (userPromptIsVisible()) {
+            int commandBegins = getLineStart(textArea.getText()) + currentDirectory.length() + shellPrompt.length();
+            if (saveUserInput) {
+                savedUserCommand = textArea.getText().substring(commandBegins).replaceAll("\n", "");
+            }
+
+            textArea.setText(textArea.getText().substring(0, getLineStart(textArea.getText())));
+            textArea.setCaretPosition(textArea.getDocument().getLength());
+            previousText = textArea.getText();
+            textArea.setEditable(false);
+        }
+    }
+
+    private static void showUserPrompt() {
+        if (!userPromptIsVisible()) {
+            if (textArea.getText().substring(getLineStart(textArea.getText())).length() != 0) {
+                textArea.setText(textArea.getText() + "\n");
+            }
+            textArea.setText(textArea.getText() + currentDirectory + shellPrompt + savedUserCommand);
+            textArea.setCaretPosition(textArea.getDocument().getLength());
+            previousText = textArea.getText();
+            textArea.setEditable(true);
+        }
     }
 
     @Override
     public void write(int b) throws IOException {
+        if (this.equals(terminalErr)) {
+                textArea.setForeground(new Color(100, 0, 0));
+            } else {
+                textArea.setForeground(new Color(000, 0, 0));
+        }
         // redirects data to the text area
-        textArea.append(String.valueOf((char)b));
+        int printToPosition = getPrintPosition();
+
+        String text1 = textArea.getText().substring(0, printToPosition);
+        String text2 = textArea.getText().substring(printToPosition);
+        textArea.setText(text1 + (char) b + text2);
+//        System.err.println("<" + textArea.getText() + ">");
+
         // scrolls the text area to the end of data
         textArea.setCaretPosition(textArea.getDocument().getLength());
+        previousText = textArea.getText();
+    }
+
+    private int getPrintPosition() {
+        int lineStart;
+        if (userPromptIsVisible()) {
+            if (getLineStart(textArea.getText()) == 0) {
+                textArea.setText("\n" + textArea.getText());
+                lineStart = 0;
+            } else {
+                lineStart = getLineStart(textArea.getText()) - 1;
+            }
+        } else {
+            lineStart = textArea.getDocument().getLength();
+        }
+
+        return lineStart;
+    }
+
+    private static boolean userPromptIsVisible() {
+        int lineStart = getLineStart(textArea.getText());
+        String substring = textArea.getText().substring(lineStart);
+        String prompt = currentDirectory + shellPrompt;
+        return substring.startsWith(prompt);
     }
 
     private static void keyPressedEvent(KeyEvent e) {
         lastCharacterPressed = e.getKeyChar();
-        switch (e.getKeyChar()) {
-            case KeyEvent.VK_ENTER:
-                SwingUtilities.invokeLater(() -> {
-//                    System.err.println(textArea.getText());
-                    int commandBegins = getLineStart(textArea.getText(), 1) + currentDirectory.length() + shellPrompt.length();
-                    String userCommand = textArea.getText().substring(commandBegins).replaceAll("\n", "");
-                    textArea.setText(textArea.getText().substring(0, commandBegins) + userCommand);
-                    textArea.setCaretPosition(textArea.getDocument().getLength());
-                    textArea.append("\n");
-                    System.err.println(userCommand);
-                    runCommand(userCommand);
-                });
-
-                break;
-            case KeyEvent.VK_TAB:
-                SwingUtilities.invokeLater(() -> {
-                    int tabPosition = textArea.getText().indexOf("\t");
-                    textArea.setText(textArea.getText().replaceAll("\t", ""));
-                    textArea.setCaretPosition(tabPosition);
-                    String userCommand = textArea.getText().substring(getLineStart(textArea.getText()));
-
-                    //save the current number of rows in textArea to ensure the lineStart is correct
-                    int lastNewLine = textArea.getText().lastIndexOf("\n");
-                    //call the interpreter autocomplete function
-                    String newUserCommand = Interpreter.autocomplete(userCommand, textArea.getCaretPosition() - getLineStart(textArea.getText()));
-
-                    //check to see if we are on a new line
-                    if (lastNewLine != textArea.getText().lastIndexOf("\n")) {
-                        textArea.append(currentDirectory + shellPrompt);
-                    }
-                    textArea.setText(textArea.getText().substring(0, getLineStart(textArea.getText())) + newUserCommand);
-                });
-                break;
-        }
-    }
-
-    private static void caretMovedEvent() {
-//        System.err.println(isLegalInput());
         SwingUtilities.invokeLater(() -> {
             if (!isLegalInput()) {
-                textArea.setText(previousText);
-                textArea.setCaretPosition(oldCaretPosition);
+                try {
+                    System.err.println("oldCaretPos: " + oldCaretPosition + ", lineStart: " + textArea.getText().length() + ", docLen: " + textArea.getDocument().getText(0, textArea.getDocument().getLength()));
+                } catch (BadLocationException badLocationException) {
+                    badLocationException.printStackTrace();
+                }
+                textArea.setCaretPosition(Math.max(oldCaretPosition, getLineStart(textArea.getText())));
             }
             else {
                 previousText = textArea.getText();
                 oldCaretPosition = textArea.getCaretPosition();
+                int commandBegins;
+                String userCommand;
+                switch (e.getKeyChar()) {
+                    case KeyEvent.VK_ENTER:
+//                    System.err.println(textArea.getText());
+                        commandBegins = getLineStart(textArea.getText(), 1) + currentDirectory.length() + shellPrompt.length();
+                        userCommand = textArea.getText().substring(commandBegins).replaceAll("\n", "");
+                        textArea.setText(textArea.getText().substring(0, commandBegins) + userCommand);
+                        textArea.setCaretPosition(textArea.getDocument().getLength());
+                        textArea.setText(textArea.getText() + "\n");
+                        System.err.println("command to execute: " + userCommand);
+                        runCommand(userCommand);
+
+                        break;
+                    case KeyEvent.VK_TAB:
+                        int tabPosition = textArea.getText().indexOf("\t");
+                        textArea.setText(textArea.getText().replaceAll("\t", ""));
+                        textArea.setCaretPosition(tabPosition);
+                        commandBegins = getLineStart(textArea.getText()) + currentDirectory.length() + shellPrompt.length();
+                        userCommand = textArea.getText().substring(commandBegins);
+
+                        //save the current number of rows in textArea to ensure the lineStart is correct
+                        int lastNewLine = textArea.getText().lastIndexOf("\n");
+                        //call the interpreter autocomplete function
+                        String newUserCommand = Interpreter.autocomplete(userCommand, textArea.getCaretPosition() - getLineStart(textArea.getText()));
+
+                        commandBegins = getLineStart(textArea.getText()) + currentDirectory.length() + shellPrompt.length();
+                        textArea.setText(textArea.getText().substring(0, commandBegins) + newUserCommand);
+                        textArea.setCaretPosition(textArea.getDocument().getLength());
+                        break;
+                }
             }
         });
+
+    }
+
+    private static void caretMovedEvent() {
+//        System.err.println(isLegalInput());
+//        SwingUtilities.invokeLater(() -> {
+//            if (!isLegalInput()) {
+//                textArea.setText(previousText);
+//                textArea.setCaretPosition(oldCaretPosition);
+//            }
+//            else {
+//                previousText = textArea.getText();
+//                oldCaretPosition = textArea.getCaretPosition();
+//            }
+//        });
     }
 
     public static void clear() {
         create();
+        previousText = "";
         textArea.setText("");
         textArea.setCaretPosition(textArea.getDocument().getLength());
     }
@@ -232,6 +311,7 @@ public class Terminal extends OutputStream {
         //removed from non-legal line
         //overwrote section, including from non-legal line
         int lineStart = getLineStart(previousText);
+        System.err.println("prev: " + previousText.length() + ", new: " + textArea.getText().length() + ", docLen: " + textArea.getDocument().getLength());
         if (textArea.getText().length() < lineStart) {
             return false;
         }

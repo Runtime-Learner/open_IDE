@@ -144,7 +144,8 @@ public class PackageManager {
     int i;
     for (i = 1; i < tokens.length && tokens[i] != null && i - 1 < parameters.length; i++) {
       try {
-          if (tokens[i].compareTo("@default") == 0) {
+        //TODO: more generalized method to compare tokens to special keywords? not hardcoded is the goal
+          if (tokens[i].compareTo("@default") == 0 || tokens[i].compareTo("@") == 0) {
             //User want to pass the default value to the instruction
             paramList[i-1] = convert(parameters[i - 1].getAnnotation(Param.class).Default(),
                     parameters[i - 1].getParameterizedType().getTypeName());

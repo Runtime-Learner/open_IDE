@@ -46,6 +46,11 @@ public class General extends InstructionPackage {
 
     @Instruction(description = "retrieve variable value")
     static Object get(@Param(Name = "name", Default = "") String name) {
+        try {
+            Thread.sleep(10000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
         if (name.trim().length() == 0) {
             System.out.println("Variable name cannot be empty");
             return null;
